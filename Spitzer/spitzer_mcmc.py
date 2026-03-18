@@ -1,228 +1,10 @@
-# import numpy as np
-# import matplotlib.pyplot as plt
-# import batman
-# import emcee
-# from astropy.io import fits
-# from datetime import datetime
-# import glob
-# import os
-
-# # =====================================================================
-# # LOAD & EXTRACT FIRST CHUNK
-# # =====================================================================
-# BASE_PATH = r"C:\Users\robob\Documents\astro research; stellar pulsations\Spitzer datasets"
-
-# def load_all_spitzer_data(base_path):
-#     aor_dirs = sorted([d for d in os.listdir(base_path) if os.path.isdir(os.path.join(base_path, d))])
-#     all_times, all_fluxes = [], []
-#     for aor in aor_dirs:
-#         aor_path = os.path.join(base_path, aor, f"r{aor}")
-#         bcd_files = glob.glob(os.path.join(aor_path, "**", "*_bcd.fits"), recursive=True)
-#         for fits_file in bcd_files:
-#             try:
-#                 with fits.open(fits_file, memmap=True) as hdul:
-#                     header = hdul[0].header
-#                     image_data = hdul[0].data
-#                     date_obs_str = header.get('DATE_OBS', None)
-#                     if not date_obs_str: continue
-#                     try:
-#                         time_obj = datetime.fromisoformat(date_obs_str)
-#                     except:
-#                         time_obj = datetime.strptime(date_obs_str[:19], '%Y-%m-%dT%H:%M:%S')
-#                     flux_value = np.nanmean(image_data)
-#                     all_times.append(time_obj)
-#                     all_fluxes.append(flux_value)
-#             except: continue
-#     sort_idx = np.argsort(np.array([t.timestamp() for t in all_times]))
-#     return np.array(all_times)[sort_idx], np.array(all_fluxes)[sort_idx]
-
-# print("Loading Spitzer data...")
-# times_dt, fluxes = load_all_spitzer_data(BASE_PATH)
-# times_days = np.array([(t - times_dt[0]).total_seconds()/86400.0 for t in times_dt])
-# fluxes_norm = fluxes / np.median(fluxes)
-
-# # Extract first chunk
-# chunk_end = 6.5
-# mask_chunk = times_days <= chunk_end
-# t = times_days[mask_chunk]
-# f = fluxes_norm[mask_chunk]
-
-# print(f"Chunk: {len(t)} points, days 0 to {t[-1]:.2f}")
-
-# # =====================================================================
-# # ERROR ESTIMATION
-# # =====================================================================
-# # Out-of-transit region (days 4.2-4.7)
-# out_mask = (t > 4.2) & (t < 4.7)
-# scatter = np.std(f[out_mask]) if np.sum(out_mask) > 10 else np.std(f) * 0.01
-# ferr = np.ones_like(f) * scatter
-
-# print(f"Scatter: {scatter:.2e}")
-
-# # =====================================================================
-# # BATMAN SETUP
-# # =====================================================================
-# PERIOD = 5.6334729
-# TESS_rp = 0.06857525495137623
-# TESS_a = 9.224708890816629
-# TESS_inc = 86.78853538062774
-
-# params = batman.TransitParams()
-# params.per = PERIOD
-# params.ecc = 0.516
-# params.w = 188.0
-# params.limb_dark = "quadratic"
-# params.u = [0.2, 0.3]
-
-# # =====================================================================
-# # SIMPLE MODEL: CUBIC BASELINE + TRANSIT
-# # =====================================================================
-# def model(theta, t_arr):
-#     """
-#     theta = [t0, rp, a, inc, p0, p1, p2, p3]
-#     Cubic polynomial baseline + Batman transit
-#     """
-#     t0, rp, a, inc, p0, p1, p2, p3 = theta
-    
-#     # Cubic baseline (absorbs all systematics)
-#     baseline = p0 + p1*t_arr + p2*t_arr**2 + p3*t_arr**3
-    
-#     # Transit
-#     params.t0 = t0
-#     params.rp = rp
-#     params.a = a
-#     params.inc = inc
-    
-#     m = batman.TransitModel(params, t_arr, supersample_factor=5, exp_time=0.002)
-#     transit = m.light_curve(params)
-    
-#     return baseline * transit
-
-# # =====================================================================
-# # LOG-LIKELIHOOD & PRIORS
-# # =====================================================================
-# def log_likelihood(theta, t_arr, f_arr, ferr_arr):
-#     try:
-#         mf = model(theta, t_arr)
-#         if not np.all(np.isfinite(mf)):
-#             return -np.inf
-#         res = (f_arr - mf) / ferr_arr
-#         return -0.5 * np.sum(res**2 + np.log(2*np.pi*ferr_arr**2))
-#     except:
-#         return -np.inf
-
-# def log_prior(theta):
-#     t0, rp, a, inc, p0, p1, p2, p3 = theta
-    
-#     if (4.6 < t0 < 5.0 and
-#         0.05 < rp < 0.09 and
-#         8.0 < a < 10.5 and
-#         85.0 < inc < 88.0 and
-#         0.98 < p0 < 1.02 and
-#         -0.01 < p1 < 0.01 and
-#         -0.001 < p2 < 0.001 and
-#         -0.0001 < p3 < 0.0001):
-#         return 0.0
-#     return -np.inf
-
-# def log_prob(theta, t_arr, f_arr, ferr_arr):
-#     lp = log_prior(theta)
-#     if not np.isfinite(lp):
-#         return -np.inf
-#     return lp + log_likelihood(theta, t_arr, f_arr, ferr_arr)
-
-# # =====================================================================
-# # MCMC
-# # =====================================================================
-# print("\nMCMC (8 parameters: transit + cubic baseline)...")
-
-# ndim = 8
-# nwalkers = 48
-# nsteps = 2000
-
-# init = np.array([
-#     4.8,           # t0
-#     TESS_rp,       # rp
-#     TESS_a,        # a
-#     TESS_inc,      # inc
-#     1.0,           # p0
-#     0.0,           # p1
-#     0.0,           # p2
-#     0.0            # p3
-# ])
-
-# pos = init + 1e-5 * np.random.randn(nwalkers, ndim)
-
-# sampler = emcee.EnsembleSampler(nwalkers, ndim, log_prob, args=(t, f, ferr))
-# sampler.run_mcmc(pos, nsteps, progress=True)
-
-# flat = sampler.get_chain(discard=500, thin=5, flat=True)
-# best = np.median(flat, axis=0)
-
-# # =====================================================================
-# # PRINT RESULTS
-# # =====================================================================
-# print("\n" + "="*70)
-# print("SPITZER FIRST CHUNK - TRANSIT FIT")
-# print("="*70)
-# print(f"t0 (mid-transit):   {best[0]:.6f} days")
-# print(f"rp (planet radius): {best[1]:.6f}")
-# print(f"a (semi-major axis):{best[2]:.4f}")
-# print(f"inc (inclination):  {best[3]:.2f}°")
-# print(f"p0 (baseline const):{best[4]:.6f}")
-# print(f"p1 (linear):        {best[5]:+.6f}")
-# print(f"p2 (quadratic):     {best[6]:+.6f}")
-# print(f"p3 (cubic):         {best[7]:+.6f}")
-
-# mf_best = model(best, t)
-# chi2 = np.sum(((f - mf_best) / ferr)**2)
-# chi2_red = chi2 / (len(t) - ndim)
-
-# print(f"\nχ²:                 {chi2:.2f}")
-# print(f"χ²_red:             {chi2_red:.4f}")
-# print(f"DOF:                {len(t) - ndim}")
-# print("="*70)
-
-# # =====================================================================
-# # PLOT
-# # =====================================================================
-# t_model = np.linspace(0, 6.5, 2000)
-# f_model = model(best, t_model)
-
-# fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 9), sharex=True,
-#                                 gridspec_kw={'height_ratios': [3, 1]})
-
-# # Data & model
-# ax1.plot(t, f, '.', ms=2.5, alpha=0.3, label='Spitzer data', color='C0')
-# ax1.plot(t_model, f_model, 'r-', lw=2.5, label='Best-fit (cubic + transit)')
-# ax1.set_ylabel("Normalized Flux", fontsize=12)
-# ax1.set_title(f"Spitzer First Chunk | "
-#               f"rp={best[1]:.4f}, a={best[2]:.2f}, inc={best[3]:.1f}° | "
-#               f"χ²_red={chi2_red:.3f}", 
-#               fontsize=13, fontweight='bold')
-# ax1.legend(fontsize=11, loc='upper right')
-# ax1.grid(alpha=0.3)
-
-# # Residuals
-# res = f - model(best, t)
-# ax2.plot(t, res, '.', ms=2.5, alpha=0.3, color='C0')
-# ax2.axhline(0, color='r', ls='--', lw=1.5)
-# ax2.set_xlabel("Time (days from first observation)", fontsize=12)
-# ax2.set_ylabel("Residuals", fontsize=12)
-# ax2.grid(alpha=0.3)
-
-# plt.tight_layout()
-# plt.savefig('spitzer_transit_simple.png', dpi=300, bbox_inches='tight')
-# print("\nPlot saved: spitzer_transit_simple.png")
-# plt.show()
-
-# print("\n✓ Done! Transit fit complete.")
-
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
 import glob
 import os
+import corner
+import scipy.stats as stats
 import batman
 import emcee
 
@@ -616,6 +398,7 @@ def full_model(theta, t_bjd, x, y):
 
     # planet phase curve
     planet = planet_flux_model(t_rel, Fp_Fsmin, c1, c2, c3, c4, c5, c6)
+    # planet = 0
 
     # baseline: polynomial in time, x, y
     t0 = np.median(t_rel)
@@ -827,16 +610,51 @@ def run_emcee_on_spitzer():
     print("=" * 60)
 
     # Make a quick model plot
-    model_flux, _ = full_model(best, t_sel, x_sel, y_sel)
+    model_flux, sigma_jit = full_model(best, t_sel, x_sel, y_sel)
+    resid = f_sel - model_flux
+    var   = ferr_sel**2 + sigma_jit**2
 
-    plt.figure(figsize=(10, 5))
-    plt.errorbar(t_sel, f_sel, yerr=ferr_sel, fmt=".k", ms=2, alpha=0.4, label="Spitzer 4.5 µm")
-    plt.plot(t_sel, model_flux, "r-", lw=2, label="best-fit model")
+    chi2 = np.sum(resid**2 / var)
+    dof  = len(resid) - len(best)      # N_data - N_params
+    chi2_red = chi2 / dof
+
+    print(f"chi2       = {chi2:.2f}")
+    print(f"chi2_red   = {chi2_red:.3f}")
+    print(f"N_data     = {len(resid)}")
+    print(f"N_params   = {len(best)}")
+
+    z = resid / np.sqrt(var)
+
+    # Optionally clip extreme outliers so they don't dominate
+    z_clip = z[np.abs(z) < 5]
+
+    skew = stats.skew(z_clip)
+    kurt = stats.kurtosis(z_clip, fisher=True)  # this is k-3 (excess)
+
+    print(f"Residual skewness      = {skew:.3f}")
+    print(f"Residual excess kurtosis (k-3) = {kurt:.3f}")
+    
+    plt.figure(figsize=(9,4))
+    plt.plot(t_sel, resid*1e3, "k.", ms=2, alpha=0.5)
+    plt.axhline(0, color="r", ls="--")
     plt.xlabel("BJD_UTC")
-    plt.ylabel("Normalized flux")
-    plt.legend()
+    plt.ylabel("Residuals (mmag)")
     plt.tight_layout()
     plt.show()
+
+    labels = [
+        "t0_rel", "rp", "a", "inc",
+        "Fp_Fsmin", "c1", "c2", "c3", "c4", "c5", "c6",
+        "b0", "b1", "b2",
+        "bx", "by", "bxx", "byy", "bxy",
+        "log_sigma_jit",
+    ]
+
+    fig = corner.corner(flat, labels=labels, show_titles=True,
+                        title_fmt=".4g", max_n_ticks=4)
+    fig.savefig("spitzer_corner1.png", dpi=200)
+    print("Saved spitzer_corner1.png")
+
 
 
 if __name__ == "__main__":
