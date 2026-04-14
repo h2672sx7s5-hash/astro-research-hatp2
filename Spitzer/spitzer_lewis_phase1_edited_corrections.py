@@ -738,7 +738,7 @@ def extract_photometry(data, x_cent, y_cent, aperture_radius=2.25):
 # This is done after photometry extraction because we care about outliers in the
 # final time series, not just in individual image pixels.
 
-def remove_outliers(times, flux, x, y, noise_pix, sigma=4.5, window=16):
+def remove_outliers(times, flux, x, y, sigma=4.5, window=16):
     """
     Remove outliers using moving median filter.
     
@@ -790,11 +790,11 @@ def remove_outliers(times, flux, x, y, noise_pix, sigma=4.5, window=16):
     flux = flux[good]
     x = x[good]
     y = y[good]
-    noise_pix = noise_pix[good]
+    # noise_pix = noise_pix[good]
     
     print(f"✓ {len(flux)} points remaining after outlier removal")
     
-    return times, flux, x, y, noise_pix
+    return times, flux, x, y
 
 
 
@@ -854,7 +854,7 @@ def normalize_flux(flux):
 # - It shows whether flux variations correlate with x/y motion.
 # - It gives a sanity check that your extracted raw light curve resembles the
 #   published Lewis-style diagnostics.
-def plot_raw_diagnostics(times, x, y, noise_pix, flux_norm, save_path="spitzer_raw_diagnostics.png"):
+def plot_raw_diagnostics(times, x, y, flux_norm, save_path="spitzer_raw_diagnostics.png"):
     """
     Generate Figure 2-style diagnostic plots.
     
@@ -893,7 +893,6 @@ def plot_raw_diagnostics(times, x, y, noise_pix, flux_norm, save_path="spitzer_r
         't': t_hours,
         'x': x,
         'y': y,
-        'noise': noise_pix,
         'flux': flux_norm
     })
     
@@ -906,13 +905,13 @@ def plot_raw_diagnostics(times, x, y, noise_pix, flux_norm, save_path="spitzer_r
     t_bin = df_binned['bin'].values
     x_bin = df_binned['x'].values
     y_bin = df_binned['y'].values
-    noise_bin = df_binned['noise'].values
+    # noise_bin = df_binned['noise'].values
     flux_bin = df_binned['flux'].values
     
     print(f"  Binned {len(df)} points into {len(df_binned)} bins")
     
     # Create 4-panel plot
-    fig, axes = plt.subplots(4, 1, figsize=(12, 10), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
     
     # Panel (a): X position
     # This shows how the stellar centroid moves in x across the detector over time.
@@ -938,19 +937,19 @@ def plot_raw_diagnostics(times, x, y, noise_pix, flux_norm, save_path="spitzer_r
     
     # Panel (c): Noise pixels
     # This tracks changes in the effective PSF width/shape over time.
-    axes[2].plot(t_bin, noise_bin, 'k.', ms=2, alpha=0.6)
+    # axes[2].plot(t_bin, noise_bin, 'k.', ms=2, alpha=0.6)
     axes[2].set_ylabel("Noise Pixels")
-    axes[2].set_ylim(noise_bin.min() - 0.5, noise_bin.max() + 0.5)
+    # axes[2].set_ylim(noise_bin.min() - 0.5, noise_bin.max() + 0.5)
     axes[2].text(0.02, 0.95, '(c)', transform=axes[2].transAxes, 
                  fontsize=12, va='top', fontweight='bold')
     
     # Panel (d): Raw photometry
     # This is the extracted raw light curve before Phase 2 decorrelation/modeling.
-    axes[3].plot(t_bin, flux_bin, 'k.', ms=2, alpha=0.6)
-    axes[3].set_ylabel("Relative Flux")
-    axes[3].set_xlabel("Observation Time (hours)")
-    axes[3].set_ylim(flux_bin.min() - 0.005, flux_bin.max() + 0.005)
-    axes[3].text(0.02, 0.95, '(d)', transform=axes[3].transAxes, 
+    axes[2].plot(t_bin, flux_bin, 'k.', ms=2, alpha=0.6)
+    axes[2].set_ylabel("Relative Flux")
+    axes[2].set_xlabel("Observation Time (hours)")
+    axes[2].set_ylim(flux_bin.min() - 0.005, flux_bin.max() + 0.005)
+    axes[2].text(0.02, 0.95, '(d)', transform=axes[2].transAxes, 
                  fontsize=12, va='top', fontweight='bold')
     
     plt.tight_layout()
@@ -979,7 +978,7 @@ def plot_raw_diagnostics(times, x, y, noise_pix, flux_norm, save_path="spitzer_r
 #
 # If you ever want to explain Phase 1 out loud to your mentor, this order is the
 # cleanest summary of the whole script.
-def main():
+def main(apply_background=True, apply_hot_pixels=True, label="full"):
     """
     Run Phase 1: Raw photometry extraction following Lewis+2013 Section 2.1.
     """
@@ -993,12 +992,19 @@ def main():
     times, data = load_spitzer_bcd_files(BASE_PATH, channel="ch2")
     
     # Step 2: Background subtraction
-    # Remove the sky/background level from every image.
-    data_bgsub, bg_levels = subtract_backgrounds(data)
-    
+    if apply_background:
+        data_bgsub, bg_levels = subtract_backgrounds(data)
+    else:
+        print("\nSkipping background subtraction")
+        data_bgsub = data.copy()
+        bg_levels = np.zeros(len(data))
+
     # Step 3: Hot pixel correction
-    # Replace transient bad detector pixels using 64-frame local statistics.
-    data_clean = correct_hot_pixels(data_bgsub, sigma=HOT_PIXEL_SIGMA)
+    if apply_hot_pixels:
+        data_clean = correct_hot_pixels(data_bgsub, sigma=HOT_PIXEL_SIGMA)
+    else:
+        print("\nSkipping hot pixel correction")
+        data_clean = data_bgsub.copy()
     
     # Step 4: Flux-weighted centroids
     # Measure the star's x and y position in every cleaned image.
@@ -1010,12 +1016,12 @@ def main():
     
     # Step 6: Noise pixel calculation
     # Compute a PSF-width/quality diagnostic for each image.
-    noise_pix = compute_noise_pixels(data_clean)
+    # noise_pix = compute_noise_pixels(data_clean)
     
     # Step 7: Remove outliers
     # Reject obviously bad photometric points while keeping all output arrays aligned.
-    times, flux, x_cent, y_cent, noise_pix = remove_outliers(
-        times, flux, x_cent, y_cent, noise_pix,
+    times, flux, x_cent, y_cent = remove_outliers(
+        times, flux, x_cent, y_cent,
         sigma=OUTLIER_SIGMA, window=OUTLIER_WINDOW
     )
     
@@ -1023,27 +1029,19 @@ def main():
     # Divide the raw fluxes by their median so the light curve baseline is near 1.
     flux_norm, median_flux = normalize_flux(flux)
     
-    # Step 9: Plot raw diagnostics (Figure 2 style)
-    # Make the main inspection plot for x, y, noise pixels, and raw photometry.
-    plot_raw_diagnostics(times, x_cent, y_cent, noise_pix, flux_norm)
-    
-    # Save raw photometry to CSV
-    # This CSV is the key Phase 1 product.
-    # It is what Phase 2 reads in order to model/correct systematics and fit the light curve.
-    print("\n" + "=" * 60)
-    print("SAVING RAW PHOTOMETRY")
-    print("=" * 60)
-    
+    plot_raw_diagnostics(
+        times, x_cent, y_cent, flux_norm,
+        save_path=f"spitzer_raw_diagnostics_{label}.png"
+    )
+
     df = pd.DataFrame({
         'BJD_UTC': times,
         'flux_norm': flux_norm,
         'x_cent': x_cent,
-        'y_cent': y_cent,
-        'noise_pix': noise_pix
+        'y_cent': y_cent
     })
-    df.to_csv("spitzer_raw_photometry.csv", index=False)
-    print("✓ Saved spitzer_raw_photometry.csv")
-    
+    df.to_csv(f"spitzer_raw_photometry_{label}.csv", index=False)
+        
     print("\n" + "=" * 60)
     print("PHASE 1 COMPLETE")
     print("=" * 60)
@@ -1052,6 +1050,24 @@ def main():
     print(f"  Next: Phase 2 will apply ramp correction, intrapixel sensitivity, and model")
 
 
-
 if __name__ == "__main__":
-    main()
+    # Full pipeline (all corrections applied)
+    main(
+        apply_background=True,
+        apply_hot_pixels=True,
+        label="full"
+    )
+
+    # Test 1: No background subtraction
+    main(
+        apply_background=False,
+        apply_hot_pixels=True,
+        label="no_background"
+    )
+
+    # Test 2: No hot pixel correction
+    main(
+        apply_background=True,
+        apply_hot_pixels=False,
+        label="no_hot_pixels"
+    )

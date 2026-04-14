@@ -170,29 +170,30 @@ for i, seg in enumerate(segments):
     if len(t_trim) < 20:
         continue
     
-    try:
-        # Fit the double-exponential ramp.
-        # The initial guesses and bounds are chosen to keep the fit in a physically
-        # reasonable range and avoid wildly unstable solutions.
-        popt, _ = curve_fit(
-            ramp_function,
-            t_trim,
-            flux_trim,
-            p0=[0.01, 0.1, 0.01, 0.3],
-            bounds=([-0.1, 0.01, -0.1, 0.01], [0.1, 1.0, 0.1, 1.0])
-        )
+    # NEW TODO: Remove trim for ch2.
+    # try:
+    #     # Fit the double-exponential ramp.
+    #     # The initial guesses and bounds are chosen to keep the fit in a physically
+    #     # reasonable range and avoid wildly unstable solutions.
+    #     popt, _ = curve_fit(
+    #         ramp_function,
+    #         t_trim,
+    #         flux_trim,
+    #         p0=[0.01, 0.1, 0.01, 0.3],
+    #         bounds=([-0.1, 0.01, -0.1, 0.01], [0.1, 1.0, 0.1, 1.0])
+    #     )
         
-        # Evaluate the ramp over the full segment, not just the trimmed part,
-        # then divide the original segment by that model.
-        ramp_model = ramp_function(t_seg, *popt)
-        flux_corr[seg] /= ramp_model
+    #     # Evaluate the ramp over the full segment, not just the trimmed part,
+    #     # then divide the original segment by that model.
+    #     ramp_model = ramp_function(t_seg, *popt)
+    #     flux_corr[seg] /= ramp_model
         
-        ramp_params.append(popt)
-        print(f"  Segment {i}: a1={popt[0]:.4f}, tau1={popt[1]*24:.1f}hr")
+    #     ramp_params.append(popt)
+    #     print(f"  Segment {i}: a1={popt[0]:.4f}, tau1={popt[1]*24:.1f}hr")
     
-    except:
-        # If the fit fails, leave that segment unchanged.
-        print(f"  Segment {i}: fit failed, no correction")
+    # except:
+    #     # If the fit fails, leave that segment unchanged.
+    #     print(f"  Segment {i}: fit failed, no correction")
 
 
 print("✓ Ramp correction applied")
@@ -292,7 +293,7 @@ flux_med = median_filter(flux_final, size=16, mode='nearest')
 # Measure how far each point lies from that local baseline.
 resid_clip = np.abs(flux_final - flux_med)
 std_clip = np.std(resid_clip)
-good = resid_clip < 10.0 * std_clip
+good = resid_clip < 10.0 * std_clip # 10sigma
 
 
 print(f"  Removing {np.sum(~good)} outliers ({np.sum(~good)/len(flux_final)*100:.2f}%)")
