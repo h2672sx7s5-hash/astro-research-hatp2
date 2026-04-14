@@ -836,6 +836,67 @@ def normalize_flux(flux):
     
     return flux_norm, median_flux
 
+def compute_diagnostics(times, flux_norm, label="dataset"):
+    """
+    Compute statistical diagnostics for comparing pipeline outputs.
+    """
+
+    print("\n" + "=" * 60)
+    print(f"DIAGNOSTICS FOR: {label.upper()}")
+    print("=" * 60)
+
+    # Standard deviation and RMS
+    std = np.std(flux_norm)
+    rms = np.sqrt(np.mean((flux_norm - 1.0) ** 2))
+
+    # Median Absolute Deviation (robust scatter)
+    mad = np.median(np.abs(flux_norm - np.median(flux_norm)))
+    mad_scaled = 1.4826 * mad  # Equivalent to Gaussian sigma
+
+    # Reduced chi-square relative to unity
+    chi2_red = np.mean(((flux_norm - 1.0) / std) ** 2)
+
+    # Point-to-point RMS (sensitive to hot pixels)
+    ptp_rms = np.sqrt(np.mean(np.diff(flux_norm) ** 2))
+
+    # Estimate red noise via binning (Beta factor)
+    def beta_factor(flux, max_bin=50):
+        betas = []
+        N = len(flux)
+        sigma1 = np.std(flux)
+
+        for bin_size in range(2, max_bin):
+            nbins = N // bin_size
+            if nbins < 2:
+                continue
+
+            binned = flux[:nbins * bin_size].reshape(nbins, bin_size).mean(axis=1)
+            sigma_binned = np.std(binned)
+            expected = sigma1 / np.sqrt(bin_size)
+            betas.append(sigma_binned / expected)
+
+        return np.max(betas) if betas else np.nan
+
+    beta = beta_factor(flux_norm)
+
+    # Print results
+    print(f"Number of Points      : {len(flux_norm)}")
+    print(f"Standard Deviation    : {std:.6e}")
+    print(f"RMS Scatter           : {rms:.6e}")
+    print(f"MAD (scaled)          : {mad_scaled:.6e}")
+    print(f"Reduced Chi-Squared   : {chi2_red:.6f}")
+    print(f"Point-to-Point RMS    : {ptp_rms:.6e}")
+    print(f"Beta Factor (Red Noise): {beta:.3f}")
+
+    return {
+        "N": len(flux_norm),
+        "std": std,
+        "rms": rms,
+        "mad": mad_scaled,
+        "chi2_red": chi2_red,
+        "ptp_rms": ptp_rms,
+        "beta": beta
+    }
 
 
 # ============================================================
@@ -1028,6 +1089,9 @@ def main(apply_background=True, apply_hot_pixels=True, label="full"):
     # Step 8: Normalize
     # Divide the raw fluxes by their median so the light curve baseline is near 1.
     flux_norm, median_flux = normalize_flux(flux)
+
+    # Compute diagnostics
+    metrics = compute_diagnostics(times, flux_norm, label=label)
     
     plot_raw_diagnostics(
         times, x_cent, y_cent, flux_norm,
@@ -1048,6 +1112,10 @@ def main(apply_background=True, apply_hot_pixels=True, label="full"):
     print(f"  Total points: {len(flux_norm)}")
     print(f"  Time span: {times.max() - times.min():.2f} days")
     print(f"  Next: Phase 2 will apply ramp correction, intrapixel sensitivity, and model")
+
+    metrics_df = pd.DataFrame([metrics])
+    metrics_df.to_csv(f"spitzer_diagnostics_{label}.csv", index=False)
+    print(f"✓ Saved spitzer_diagnostics_{label}.csv")
 
 
 if __name__ == "__main__":
