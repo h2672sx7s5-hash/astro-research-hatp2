@@ -32,6 +32,10 @@ except Exception:
 # live here. These are the knobs you are least likely to touch in the
 # middle of a debugging session.
 
+# ---- Lewis pixel-mapping settings (Appendix B, 4.5 μm) --------------
+#TODO 2 min intervals
+PIXELMAP_N_NEIGH = 50   # number of nearest neighbours N (use Fig. 18 optimum)
+
 # ---- I/O filenames --------------------------------------------------
 
 INPUT_CSV = "spitzer_raw_photometry_p1.csv"
@@ -995,6 +999,87 @@ def lewis_pixelmap_diagnostic(
 
     print(f"Saved {output_fig}")
 
+def lewis_correct_and_fit_main(
+    t,
+    flux_raw,
+    x,
+    y,
+    noisepix,
+    theta_ast,
+    n_neigh=PIXELMAP_N_NEIGH,
+):
+    """
+    Main intrapixel correction + 5-parameter fit using the
+    Lewis et al. (2013) Appendix B pixel-mapping method.
+
+    This replaces the grid-based intrapixel map for the
+    science light curve (Fig. 5, zoomed events, MCMC).
+
+    Parameters
+    ----------
+    t : array
+        Times (BJD), after trim + pre-correction sigma clip.
+    flux_raw : array
+        Raw normalized flux after trim + sigma clip.
+    x, y : arrays
+        Centroid positions.
+    noisepix : array
+        Noise pixel parameter (\\tilde{β}) for each point.
+    theta_ast : array-like
+        Astrophysical parameter guess [Δt0, log_fp, c2, c4, baseline]
+        used to construct F_ast(t; theta_ast).
+    n_neigh : int
+        Number of nearest neighbours N for the pixel map.
+
+    Returns
+    -------
+    theta_best : array
+        Best-fit 5-parameter vector after correction.
+    fitres : OptimizeResult
+        least_squares OptimizeResult.
+    flux_corr : array
+        Corrected, out-of-event renormalized flux.
+    flux_err : array
+        Per-point uncertainties used in the fit.
+    sens : array
+        Pixel-mapping sensitivity correction W_i for each point.
+    """
+    # Initial per-point uncertainties from the raw flux
+    flux_err_raw = estimate_flux_err(flux_raw)
+
+    # 1) Astrophysical model and F0,j = F_j / F_ast(t_j; theta_ast).
+    F_ast = astrophysical_model(t, theta_ast)
+    safe_F_ast = np.where(F_ast <= 0, 1.0, F_ast)
+    F0 = flux_raw / safe_F_ast
+
+    # 2) Build neighbour lists in (x, y, sqrt(beta)) using cKDTree.
+    sqrt_beta = np.sqrt(noisepix)
+    coords = np.column_stack((x, y, sqrt_beta))
+
+    tree = cKDTree(coords)
+    # Query k = N + 1 to include self; neighbours are indices 1:.
+    dists, idx = tree.query(coords, k=n_neigh + 1)
+    neigh_idx = idx[:, 1:]
+
+    # 3) Compute W_i via Appendix B and correct the flux.
+    sens = _compute_lewis_weights(F0, x, y, sqrt_beta, neigh_idx)
+    flux_corr = flux_raw / sens
+
+    # 4) Out-of-event renormalization to force baseline ≈ 1.
+    dt0_ast, _, _, _, _ = theta_ast
+    t0_ast = LEWIS["t0"] + dt0_ast
+    oot_mask, *_ = make_event_mask(t, t0_ast)
+    if np.sum(oot_mask) > 100:
+        flux_corr = flux_corr / np.nanmedian(flux_corr[oot_mask])
+
+    # 5) Re-estimate uncertainties on the corrected curve.
+    flux_err = estimate_flux_err(flux_corr)
+
+    # 6) 5-parameter LSQ fit on the corrected light curve.
+    theta_best, fitres = fit_five_params(t, flux_corr, flux_err, theta_ast)
+
+    return theta_best, fitres, flux_corr, flux_err, sens
+
 
 # ============================================================
 # PLOTTING HELPERS
@@ -1004,32 +1089,51 @@ def plot_phase_curve(t, flux_corr, model, theta_best):
     """
     Phase-curve-style plot: flux vs time from periapse, with model.
 
-    This follows the Lewis Fig. 5 spirit:
-      - x-axis: time from periapse
-      - y-axis: relative flux
-      - 5-minute binned points + continuous model curve
+    This version matches Lewis et al. (2013) Fig. 5 middle panel:
+      - x-axis: time from periapse in days
+      - range: -6 to +2 days
+      - y-axis: relative flux, OOT baseline ≈ 1
     """
     dt0, _, _, _, _ = theta_best
     t0 = LEWIS["t0"] + dt0
-    _, tp = true_anomaly_from_time(t, t0, LEWIS["per"], LEWIS["ecc"], LEWIS["w_deg"])
-    trel = t - tp
 
-    tb, fb, _ = bin_data(trel, flux_corr, PHASE_BINSIZE_DAYS)
-    _, mb, _ = bin_data(trel, model, PHASE_BINSIZE_DAYS)
+    # --- OOT renormalization so stellar baseline ≈ 1 ---
+    oot_mask, *_ = make_event_mask(t, t0)
+    if np.sum(oot_mask) > 100:
+        norm = np.nanmedian(flux_corr[oot_mask])
+    else:
+        norm = 1.0
+
+    flux_plot = flux_corr / norm
+    model_plot = model / norm
+
+    # --- Time from periapse (in days) ---
+    _, tp = true_anomaly_from_time(t, t0, LEWIS["per"], LEWIS["ecc"], LEWIS["w_deg"])
+    trel_days = t - tp
+
+    # Bin in time (5-minute bins, still in days)
+    tb, fb, _ = bin_data(trel_days, flux_plot, PHASE_BINSIZE_DAYS)
+    _, mb, _ = bin_data(trel_days, model_plot, PHASE_BINSIZE_DAYS)
 
     n = min(len(tb), len(fb), len(mb))
     tb, fb, mb = tb[:n], fb[:n], mb[:n]
 
+    # --- Plot ---
     fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(tb, fb, "ko", ms=2.5, label="4.5 μm binned 5 min")
+    ax.plot(tb, fb, "ko", ms=2.5, label="4.5 μm, 5 min bins")
     ax.plot(tb, mb, "r-", lw=1.8, label="Best-fit Eq. 12 model")
     ax.axhline(1.0, color="r", lw=0.8, ls="--", alpha=0.4)
-    ax.set_xlabel("Time from periapse (days)")
-    ax.set_ylabel("Relative Flux")
+
+    # Start with a sensible y-range; adjust once you see the plot
+    ax.set_ylim(0.994, 1.010)
+
+    ax.set_xlabel("Time from periapse (2 days)")
+    ax.set_ylabel("Relative flux")
     ax.set_title("HAT-P-2b 4.5 μm phase curve")
     ax.legend(fontsize=9)
+
     plt.tight_layout()
-    plt.savefig(OUTPUT_PHASE_FIG, dpi=150)      
+    plt.savefig(OUTPUT_PHASE_FIG, dpi=150)
     plt.close(fig)
 
 
@@ -1222,12 +1326,12 @@ def main():
     y_pixelmap = y.copy()
     noisepix_pixelmap = noisepix.copy()
 
-    # ---- Intrapixel correction + 5-parameter LSQ fit ----------------
+    # ---- Intrapixel correction + 5-parameter LSQ fit (Lewis pixel map) ----
     print("=" * 70)
-    print("INTRAPIXEL MAP + 5-PARAMETER LSQ FIT")
+    print("LEWIS PIXEL MAP + 5-PARAMETER LSQ FIT")
     print("=" * 70)
-    theta_best, fitres, flux_corr, flux_err, sens, xbins, ybins, sens_grid = one_pass_correct_and_fit(
-        t, flux, x, y
+    theta_best, fitres, flux_corr, flux_err, sens = lewis_correct_and_fit_main(
+        t, flux, x, y, noisepix, THETA0, n_neigh=PIXELMAP_N_NEIGH
     )
 
     # ---- Post-correction sigma clipping (Phase 2 style) -------------
